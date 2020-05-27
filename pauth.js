@@ -3,6 +3,7 @@ const nodemailer = require("nodemailer");
 const url = require('url');
 const querystring = require('querystring');
 const path = require('path');
+const crypto = require('crypto');
 
 class PauthBuilder {
   async build() {
@@ -44,6 +45,7 @@ class Pauth {
     this._config = config;
     this._allPerms = allPerms;
     this._tokens = tokens;
+    this._persistTokens();
 
     this._pendingVerifications = {};
 
@@ -68,6 +70,7 @@ class Pauth {
           const expireTime = new Date(Date.parse(token.expiresAt));
           if (timestamp > expireTime) {
             delete this._tokens[key];
+            this._persistTokens();
           }
         }
       }
@@ -170,30 +173,84 @@ class Pauth {
     }
     else if (method === 'delegate-auth-code' && req.method === 'POST') {
       const perms = parsePermsFromScope(params.scope);
-      const authCode = this.delegateAuthCode(token, { perms });
-      res.write(authCode);
+      const authCode = this.delegateAuthCode(
+        token, params['code_challenge'], params['client_id'],
+        params['redirect_uri'], { perms });
+
+      if (authCode) {
+        res.write(authCode);
+      }
+      else {
+        res.write("User doesn't have permission to do that");
+      }
+
       res.end();
     }
     else if (method === 'token') {
 
+      const body = await parseBody(req);
+      const params = querystring.parse(body);
+
       const grantType = params['grant_type'];
 
-      if (grantType !== 'authorization_code') {
-        res.statusCode = 400;
-        res.write("Invalid grant_type. Must be authorization_code");
-        res.end();
-        return;
-      }
 
       const authCode = params['code'];
       const authToken = this._tokens[authCode];
 
-      if (authToken) {
-        res.write(authToken.accessTokenKey);
-        delete this._tokens[authCode];
+      if (!authCode) {
+        res.statusCode = 400;
+        res.setHeader('Content-Type', 'application/json');
+        res.write(JSON.stringify({
+          error: "invalid_request",
+          error_description: "Missing code",
+        }));
+      }
+      else if (grantType !== 'authorization_code') {
+        res.statusCode = 400;
+        res.setHeader('Content-Type', 'application/json');
+        res.write(JSON.stringify({
+          error: "invalid_request",
+          error_description: "Invalid grant_type. Must be authorization_code",
+        }));
+      }
+      else if (!authToken) {
+        res.statusCode = 400;
+        res.setHeader('Content-Type', 'application/json');
+        res.write(JSON.stringify({
+          error: "invalid_grant",
+          error_description: "No auth token found. Maybe it expired",
+        }));
+      }
+      else if (!params['client_id'] || (params['client_id'] !== authToken.clientId)) {
+        res.statusCode = 400;
+        res.setHeader('Content-Type', 'application/json');
+        res.write(JSON.stringify({
+          error: "invalid_client",
+          error_description: "client_id doesn't match",
+        }));
+      }
+      else if (!params['redirect_uri'] || (params['redirect_uri'] !== authToken.redirectUri)) {
+        res.statusCode = 400;
+        res.setHeader('Content-Type', 'application/json');
+        res.write(JSON.stringify({
+          error: "invalid_grant",
+          error_description: "redirect_uri doesn't match",
+        }));
+      }
+      else if (!params['code_verifier'] || !await codeMatches(params['code_verifier'], authToken.codeChallenge)) {
+        res.statusCode = 400;
+        res.setHeader('Content-Type', 'application/json');
+        res.write(JSON.stringify({
+          error: "invalid_request",
+          error_description: "code_verifier doesn't match",
+        }));
       }
       else {
-        res.statusCode = 400;
+        res.write(JSON.stringify({
+          access_token: authToken.accessTokenKey,
+        }, null, 2));
+        delete this._tokens[authCode];
+        this._persistTokens();
       }
 
       res.end();
@@ -278,16 +335,19 @@ class Pauth {
     return tokenKey;
   }
 
-  delegateAuthCode(tokenKey, request) {
+  delegateAuthCode(tokenKey, codeChallenge, clientId, redirectUri, request) {
 
     const accessTokenKey = this.delegate(tokenKey, request);
 
     if (!accessTokenKey) {
-      throw new Error("accessTokenKey");
+      return null;
     }
 
     const authToken = {
       accessTokenKey,
+      codeChallenge,
+      clientId,
+      redirectUri,
     };
 
     const authCode = generateKey();
@@ -644,12 +704,12 @@ class Pauth {
   }
 
   async _persistPerms() {
-    const permsJson = JSON.stringify(this._allPerms, null, 4);
+    const permsJson = JSON.stringify(this._allPerms, null, 2);
     await fs.promises.writeFile('pauth_perms.json', permsJson);
   }
 
   async _persistTokens() {
-    const tokensJson = JSON.stringify(this._tokens, null, 4);
+    const tokensJson = JSON.stringify(this._tokens, null, 2);
     await fs.promises.writeFile('pauth_tokens.json', tokensJson);
   }
 
@@ -752,6 +812,18 @@ function parsePermsFromScope(scope) {
 
   return allPerms;
 }
+
+async function codeMatches(codeVerifier, codeChallenge) {
+
+  const base64Code = crypto
+    .createHash('sha256')
+    .update(codeVerifier)
+    .digest('base64')
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+  return base64Code === codeChallenge;
+}
+
 
 module.exports = {
   PauthBuilder,

@@ -1,6 +1,6 @@
 {
   "name": "pauth",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "path-based authorization server",
   "main": "pauth.js",
   "scripts": {
