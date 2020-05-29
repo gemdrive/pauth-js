@@ -84,52 +84,61 @@
     }
 
     .remfs-dialog {
+    }
+    .remfs-dialog__overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0, 0, 0, .5);
+      z-index: 1000;
+    }
+    .remfs-dialog__content {
       position: fixed;
       top: 50%;
       left: 50%;
       transform: translate(-50%, -50%);
-      z-index: 1;
       background-color: #000;
-      width: 300px;
+      width: 600px;
       max-width: 100%;
       height: 400px;
       max-height: 100%;
       border: 1px solid #ccc;
+      z-index: 1010;
     }
-
-    .remfs-dialog__content {
-
+    .remfs-dialog__child {
       position: absolute;
       top: 0;
       left: 0;
       width: 100%;
       height: 100%;
-
-      /*padding: 20px 50px 20px 20px;*/
-
-      overflow: auto;
-
       background-color: #fff;
     }
 
     .remfs-picker {
-      overflow-x: hidden;
     }
     .remfs-picker__list-container {
       height: 340px;
       overflow-y: scroll;
     }
     .remfs-picker__item-list {
-      padding: 10px;
+      margin: 10px;
     }
     .remfs-picker__list-item {
-      font-size: 22px;
-      overflow: hidden;
+      font-size: 16px;
+      padding-top: 12px;
+      padding-bottom: 12px;
       border-bottom: 1px solid black;
+      display: flex;
+    }
+    .remfs-picker__list-item-icon {
+      flex-shrink: 0;
     }
     .remfs-picker__list-item-text {
-      width: 0px; /* this is a hack to keep it from wrapping to the next line */
-      display: inline-block;
+      padding-left: 5px;
+      white-space: nowrap;
+      overflow: hidden;
     }
     .remfs-picker__list-item:hover {
       background-color: #ddd;
@@ -165,7 +174,6 @@
 
       </div>
 
-      <div class='dialog-container'></div>
     </main>
 
     <script type="module" src="https://unpkg.com/ionicons@5.0.0/dist/ionicons/ionicons.esm.js"></script>
@@ -175,7 +183,8 @@
       const permListEl = document.querySelector('.perm-list');
       const clientIdEl = document.querySelector('#client-id-container');
       const authorizeBtnEl = document.querySelector('.button-confirm');
-      const dialogContainer = document.querySelector('.dialog-container');
+
+      let dialog = null;
 
       const urlParams = new URLSearchParams(window.location.search);
 
@@ -185,6 +194,11 @@
       clientIdEl.innerText = clientId;
 
       const allPerms = parsePermsFromScope(scope);
+
+      if (!allPathsSet(allPerms)) {
+        authorizeBtnEl.setAttribute('disabled', true);
+        authorizeBtnEl.setAttribute('title', "Must make selections");
+      }
 
       for (let i = 0; i < allPerms.length; i++) {
 
@@ -205,7 +219,7 @@
 
           const permParams = allPerms[e.detail.key];
           const picker = Picker(permParams.type);
-          const dialog = Dialog(picker);
+          dialog = Dialog(picker);
 
           picker.addEventListener('picker-select', (e) => {
             const newPath = e.detail.path;
@@ -224,6 +238,14 @@
             const scope = encodeScopeFromPerms(allPerms);
             urlParams.set('scope', scope);
             history.pushState(null, '', window.location.pathname + '?' + decodeURIComponent(urlParams.toString()));
+
+            if (allPathsSet(allPerms)) {
+              authorizeBtnEl.removeAttribute('disabled');
+            }
+          });
+
+          dialog.addEventListener('dialog-cancel', () => {
+            killDialog();
           });
 
           picker.addEventListener('picker-cancel', () => {
@@ -231,11 +253,11 @@
           });
 
           killDialog();
-          dialogContainer.appendChild(dialog);
+          document.body.appendChild(dialog);
 
           function killDialog() {
-            if (dialogContainer.firstChild) {
-              dialogContainer.removeChild(dialogContainer.firstChild);
+            if (document.body.contains(dialog)) {
+              document.body.removeChild(dialog);
             }
           }
         });
@@ -270,6 +292,14 @@
           console.error(e);
         });
       });
+
+      function allPathsSet(perms) {
+        return perms
+          .map(p => p.path !== undefined && p.path.length > 0)
+          .reduce((acc, curr) => {
+            return acc && curr;
+          }, true);
+      }
 
 
       function parsePermsFromScope(scope) {
@@ -329,6 +359,10 @@
         const typeLabelEl = document.createElement('div');
         pathContainerEl.appendChild(typeLabelEl);
         typeLabelEl.innerText = itemTypeText;
+
+        if (permParams.hint) {
+          typeLabelEl.innerText += ": " + permParams.hint;
+        }
 
         const pathEl = document.createElement('span');
         pathEl.classList.add('path');
@@ -411,11 +445,24 @@
         const dom = document.createElement('div');
         dom.classList.add('remfs-dialog');
 
+        const overlay = document.createElement('div');
+        dom.appendChild(overlay);
+        overlay.classList.add('remfs-dialog__overlay');
+        overlay.addEventListener('click', () => {
+          dom.dispatchEvent(new CustomEvent('dialog-cancel', {
+            bubbles: true,
+          }));
+        });
+
         const content = document.createElement('div');
         dom.appendChild(content);
         content.classList.add('remfs-dialog__content');
 
-        content.appendChild(child);
+        const childEl = document.createElement('div');
+        content.appendChild(childEl);
+
+        childEl.classList.add('remfs-dialog__child');
+        childEl.appendChild(child);
 
         return dom;
       }
@@ -570,6 +617,7 @@
         const dom = document.createElement('div');
 
         const icon = document.createElement('ion-icon');
+        icon.classList.add('remfs-picker__list-item-icon');
 
         if (remfs.type === 'dir') {
           icon.name = 'folder';
