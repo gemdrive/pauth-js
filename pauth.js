@@ -6,6 +6,12 @@ const path = require('path');
 const crypto = require('crypto');
 
 class PauthBuilder {
+
+  loginPagePath(path) {
+    this._loginPagePath = path;
+    return this;
+  }
+
   async build() {
 
     let permsText;
@@ -35,17 +41,19 @@ class PauthBuilder {
       config = {};
     }
 
-    return new Pauth(config, allPerms, tokens);
+    return new Pauth(config, allPerms, tokens, this._loginPagePath);
   }
 }
 
 class Pauth {
 
-  constructor(config, allPerms, tokens) {
+  constructor(config, allPerms, tokens, loginPagePath) {
     this._config = config;
     this._allPerms = allPerms;
     this._tokens = tokens;
     this._persistTokens();
+    this._loginPagePath = loginPagePath ? loginPagePath : path.join(__dirname, 'login.html');
+    console.log(this._loginPagePath);
 
     this._pendingVerifications = {};
 
@@ -140,7 +148,7 @@ class Pauth {
       const pathParts = parsePath(reqPath);
       const tokenPerms = this._getTokenPerms(token, pathParts);
       if (!tokenPerms || !(tokenPerms.own === true)) {
-        filePath = path.join(__dirname, 'login.html');
+        filePath = this._loginPagePath;
         const stat = await fs.promises.stat(filePath);
 
         res.writeHead(200, {
