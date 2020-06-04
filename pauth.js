@@ -53,7 +53,6 @@ class Pauth {
     this._tokens = tokens;
     this._persistTokens();
     this._loginPagePath = loginPagePath ? loginPagePath : path.join(__dirname, 'login.html');
-    console.log(this._loginPagePath);
 
     this._pendingVerifications = {};
 
