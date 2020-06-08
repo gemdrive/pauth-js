@@ -12,47 +12,77 @@ class PauthBuilder {
     return this;
   }
 
+  ownerEmail(email) {
+    this._ownerEmail = email;
+    return this;
+  }
+
   async build() {
 
-    let permsText;
-    try {
-      permsText = await fs.promises.readFile('pauth_perms.json')
-    }
-    catch (e) {
-      await fs.promises.writeFile('pauth_perms.json', '{"/":{"readers":{"public":true}}}');
-    }
-    const allPerms = JSON.parse(permsText);
+    const authDir = path.join('.gemdrive', 'auth');
+    await fs.promises.mkdir(authDir, { recursive: true });
 
-    let tokensText;
+    const permsPath = path.join(authDir, 'perms.json');
+
+    let allPerms;
     try {
-      tokensText = await fs.promises.readFile('pauth_tokens.json');
+      const permsText = await fs.promises.readFile(permsPath)
+      allPerms = JSON.parse(permsText);
     }
     catch (e) {
-      await fs.promises.writeFile('pauth_tokens.json', '{}');
+
+      if (!this._ownerEmail) {
+        throw new Error("Email required on first run");
+      }
+
+      allPerms = {
+        '/': {
+          owners: {
+            [this._ownerEmail]: true,
+          },
+        },
+      };
+
+      await persistJson(allPerms, permsPath);
     }
-    const tokens = JSON.parse(tokensText);
+
+    const tokensPath = path.join(authDir, 'tokens.json');
+
+    let tokens;
+    try {
+      const tokensText = await fs.promises.readFile(tokensPath);
+      tokens = JSON.parse(tokensText);
+    }
+    catch (e) {
+      tokens = {};
+      await persistJson(tokens, tokensPath);
+    }
+
+    const configPath = 'gemdrive_config.json';
 
     let config;
     try {
-      const configText = await fs.promises.readFile('pauth_config.json');
+      const configText = await fs.promises.readFile(configPath);
       config = JSON.parse(configText);
     }
     catch (e) {
-      config = {};
+      throw new Error("No config provided");
     }
 
-    return new Pauth(config, allPerms, tokens, this._loginPagePath);
+    return new Pauth(config, allPerms, tokens, this._loginPagePath, this._ownerEmail);
   }
 }
 
 class Pauth {
 
-  constructor(config, allPerms, tokens, loginPagePath) {
+  constructor(config, allPerms, tokens, loginPagePath, ownerEmail) {
+    this._authDir = path.join('.gemdrive', 'auth');
     this._config = config;
     this._allPerms = allPerms;
     this._tokens = tokens;
     this._persistTokens();
     this._loginPagePath = loginPagePath ? loginPagePath : path.join(__dirname, 'login.html');
+    this._ownerEmail = ownerEmail ? ownerEmail : '';
 
     this._pendingVerifications = {};
 
@@ -150,7 +180,7 @@ class Pauth {
         filePath = this._loginPagePath;
         const stat = await fs.promises.stat(filePath);
 
-        res.writeHead(200, {
+        res.writeHead(403, {
           'Content-Type': 'text/html',
           'Content-Length': stat.size,
         });
@@ -712,12 +742,12 @@ class Pauth {
 
   async _persistPerms() {
     const permsJson = JSON.stringify(this._allPerms, null, 2);
-    await fs.promises.writeFile('pauth_perms.json', permsJson);
+    await fs.promises.writeFile(path.join(this._authDir, 'perms.json'), permsJson);
   }
 
   async _persistTokens() {
     const tokensJson = JSON.stringify(this._tokens, null, 2);
-    await fs.promises.writeFile('pauth_tokens.json', tokensJson);
+    await fs.promises.writeFile(path.join(this._authDir, 'tokens.json'), tokensJson);
   }
 
   _getIdent(token) {
@@ -728,6 +758,11 @@ class Pauth {
       return 'public';
     }
   }
+}
+
+async function persistJson(data, path) {
+    const text = JSON.stringify(data, null, 2);
+    await fs.promises.writeFile(path, text);
 }
 
 class Perms {
