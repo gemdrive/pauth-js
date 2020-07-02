@@ -123,7 +123,13 @@ class Pauth {
 
     const reqPath = decodeURIComponent(u.pathname.slice(rootPath.length));
 
-    const method = params['pauth-method'];
+    let method;
+    if (reqPath === '/.gemdrive/auth/addPerms') {
+      method = 'addPerms';
+    }
+    else {
+      method = params['pauth-method'];
+    }
 
     if (method === 'login') {
       try {
@@ -292,6 +298,66 @@ class Pauth {
 
       res.end();
     }
+    else if (method === 'addPerms') {
+      await this.addPerms(req, res, token);
+    }
+  }
+
+  async addPerms(req, res, token) {
+
+    const bodyJson = await parseBody(req);
+    const body = JSON.parse(bodyJson);
+
+    const roleRequests = body.requests;
+
+    // first verify we have the perms to change the perms
+    for (const request of roleRequests) {
+      if (request.perm === 'read' || request.perm === 'write') {
+        if (!this.canManage(token, request.path)) {
+          res.statusCode = 403;
+          res.write("You can't manage that");
+          res.end();
+          return;
+        }
+      }
+      else if (request.perm === 'manage' || request.perm === 'own') {
+        if (!this.canOwn(token, request.path)) {
+          res.statusCode = 403;
+          res.write("You can't own that");
+          res.end();
+          return;
+        }
+      }
+      else {
+        res.statusCode = 400;
+        res.write("Invalid perm " + request.perm);
+        res.end();
+        return;
+      }
+    }
+
+    // perform the actual change
+    for (const request of roleRequests) {
+      switch (request.perm) {
+        case 'read':
+          this.addReader(token, request.path, body.email);
+          break;
+        case 'write':
+          this.addWriter(token, request.path, body.email);
+          break;
+        case 'manage':
+          this.addManager(token, request.path, body.email);
+          break;
+        default:
+          res.statusCode = 400;
+          res.write("Invalid perm " + request.perm);
+          res.end();
+          return;
+          break;
+      }
+    }
+
+    res.end();
   }
 
   async authorize(request) {
@@ -425,7 +491,7 @@ class Pauth {
       }
 
       if (permParams.perm === 'manage') {
-        if (!this.canManage(tokenKey, path)) {
+        if (!this.canManage(tokenKey, parsePath(path))) {
           return null;
         }
 
@@ -481,21 +547,24 @@ class Pauth {
   }
 
   async addReader(token, path, ident) {
-    this._assertManager(token, path);
+    const pathParts = parsePath(path);
+    this._assertManager(token, pathParts);
     this._ensureReaders(path);
     this._allPerms[path].readers[ident] = true;
     await this._persistPerms();
   }
 
   async removeReader(token, path, ident) {
-    this._assertManager(token, path);
+    const pathParts = parsePath(path);
+    this._assertManager(token, pathParts);
     this._ensureReaders(path);
     this._allPerms[path].readers[ident] = false;
     await this._persistPerms();
   }
 
   async addWriter(token, path, ident) {
-    this._assertManager(token, path);
+    const pathParts = parsePath(path);
+    this._assertManager(token, pathParts);
     this._ensureWriters(path);
     this._allPerms[path].writers[ident] = true;
     await this._persistPerms();
@@ -562,12 +631,11 @@ class Pauth {
     return this._identCanWrite(ident, perms) && tokenCanWrite;
   }
 
-  canManage(token, path) {
+  canManage(token, pathParts) {
     const ident = this._getIdent(token);
-    const parts = parsePath(path);
-    const perms = this._getPerms(parts);
+    const perms = this._getPerms(pathParts);
 
-    const tokenPerms = this._getTokenPerms(token, parts);
+    const tokenPerms = this._getTokenPerms(token, pathParts);
     if (tokenPerms === null) {
       return false;
     }
