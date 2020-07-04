@@ -1,0 +1,95 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+
+  <style>
+    html, body, main {
+      height: 100%;
+    }
+
+    body {
+      display: flex;
+      justify-content: center;
+      align-items: center;
+    }
+
+    .content {
+      max-width: 400px;
+      border: 1px solid #777;
+      padding: 1em; 
+      font-family: Verdana;
+      font-size: 1.3em;
+    }
+
+    .gemdrive-button {
+      border: transparent;
+      font-size: 20px;
+      padding: .5em 1em;
+      cursor: pointer;
+      color: white;
+      border-radius: 4px;
+      text-shadow: 0 1px 1px rgba(0, 0, 0, 0.2);
+    }
+
+    .gemdrive-button--confirm {
+      background: rgb(28, 184, 65);
+      /* this is a green */
+    }
+
+    .request-btn {
+      margin: .5em;
+    }
+
+  </style>
+
+  </head>
+
+  <body>
+    <div class='content'>
+      <div>You don't have permissions for that data. Do you want to request access?</div>
+      <button class='gemdrive-button gemdrive-button--confirm request-btn'>Request</button>
+    </div>
+
+    <script>
+      const requestBtn = document.querySelector('.request-btn');
+
+      (async () => {
+        requestBtn.addEventListener('click', async (e) => {
+          console.log("yis");
+          const urlParams = new URLSearchParams(window.location.search);
+          const perms = parsePermsFromScope(urlParams.get('scope'));
+          const response = await fetch(`/.gemdrive/auth/requestPerms`, {
+            method: 'POST',
+            body: JSON.stringify(perms),
+          });
+          console.log(response);
+        });
+      })();
+
+      function parsePermsFromScope(scope) {
+
+        const allPerms = [];
+
+        const items = scope.split(' ');
+        for (const item of items) {
+          const perms = {};
+          const params = item.split(';');
+          for (const param of params) {
+            const parts = param.split('=');
+            const key = parts[0];
+            const value = parts[1];
+            perms[key] = value.replace(/\[\]/g, ' ');
+          }
+
+          allPerms.push(perms);
+        }
+
+        return allPerms;
+      }
+    </script>
+  </body>
+
+</html>
+
