@@ -127,6 +127,9 @@ class Pauth {
     if (reqPath === '/.gemdrive/auth/addPerms') {
       method = 'addPerms';
     }
+    else if (reqPath === '/.gemdrive/auth/requestPerms') {
+      method = 'requestPerms';
+    }
     else {
       method = params['pauth-method'];
     }
@@ -202,16 +205,33 @@ class Pauth {
           return;
         }
 
-        filePath = path.join(__dirname, 'authorize.html');
-        const stat = await fs.promises.stat(filePath);
+        const requestedPerms = parsePermsFromScope(params.scope);
+        const hasPerms = this.tokenHasPerms(token, requestedPerms);
 
-        res.writeHead(200, {
-          'Content-Type': 'text/html',
-          'Content-Length': stat.size,
-        });
+        if (hasPerms) {
+          filePath = path.join(__dirname, 'authorize.html');
+          const stat = await fs.promises.stat(filePath);
 
-        const f = fs.createReadStream(filePath);
-        f.pipe(res);
+          res.writeHead(200, {
+            'Content-Type': 'text/html',
+            'Content-Length': stat.size,
+          });
+
+          const f = fs.createReadStream(filePath);
+          f.pipe(res);
+        }
+        else {
+          filePath = path.join(__dirname, 'request_access.html');
+          const stat = await fs.promises.stat(filePath);
+
+          res.writeHead(403, {
+            'Content-Type': 'text/html',
+            'Content-Length': stat.size,
+          });
+
+          const f = fs.createReadStream(filePath);
+          f.pipe(res);
+        }
       }
     }
     else if (method === 'delegate-auth-code' && req.method === 'POST') {
@@ -301,6 +321,9 @@ class Pauth {
     else if (method === 'addPerms') {
       await this.addPerms(req, res, token);
     }
+    else if (method === 'requestPerms') {
+      await this.requestPerms(req, res, u, token);
+    }
   }
 
   async addPerms(req, res, token) {
@@ -360,6 +383,43 @@ class Pauth {
     res.end();
   }
 
+  async requestPerms(req, res, urlObj, token) {
+    const bodyJson = await parseBody(req);
+    const permRequests = JSON.parse(bodyJson);
+
+    const email = this._getIdent(token);
+
+    for (const request of permRequests) {
+      const pathParts = parsePath(request.path);
+      const curPerms = this._getPerms(pathParts);
+
+      const notifySet = new Set();
+      for (const email in curPerms.owners) {
+        notifySet.add(email);
+      }
+      if (request.perm === 'read' || request.perm === 'write') {
+        for (const email in curPerms.managers) {
+          notifySet.add(email);
+        }
+      }
+
+      const scope = encodeScopeFromPerms(permRequests);
+      const reqUrl = `${this._config.host}/.gemdrive/auth/grant?email=${email}&scope=${scope}`;
+
+      for (const notifyEmail of notifySet) {
+        await this._emailer.sendMail({
+          from: `"pauth authorizer" <${this._config.smtp.sender}>`,
+          to: notifyEmail,
+          subject: "Access request",
+          text: `This is an access request from ${this._config.host}. ${email} is requesting access. Click the following link to handle the request:\n\n ${reqUrl}`,
+          //html: "<b>html Hi there</b>"
+        });
+      }
+    }
+
+    res.end();
+  }
+
   async authorize(request) {
 
     const key = generateKey();
@@ -411,29 +471,7 @@ class Pauth {
 
     const tokenKey = await promise;
 
-    // TODO: consider adding back in check to verify user has permissions
-    // requested in token. I don't think it's necessary because it will be
-    // checked at request time.
-    //const perms = request.perms;
-    //for (const path in perms) {
-    //  if (perms[path].read === true) {
-    //    if (!this.canRead(tokenKey, path)) {
-    //      return null;
-    //    }
-    //  }
-
-    //  if (perms[path].write === true) {
-    //    if (!this.canWrite(tokenKey, path)) {
-    //      return null;
-    //    }
-    //  }
-
-    //  if (perms[path].manage === true) {
-    //    if (!this.canManage(tokenKey, path)) {
-    //      return null;
-    //    }
-    //  }
-    //}
+    
 
     return tokenKey;
   }
@@ -543,6 +581,38 @@ class Pauth {
 
     this._pendingVerifications[key]();
     delete this._pendingVerifications[key];
+    return true;
+  }
+
+  tokenHasPerms(tokenKey, requests) {
+
+    for (const request of requests) {
+
+      const perm = request.perm;
+      const path = request.path;
+
+      if (perm === 'read') {
+        if (!this.canRead(tokenKey, path)) {
+          return false;
+        }
+      }
+      else if (perm === 'write') {
+        if (!this.canWrite(tokenKey, path)) {
+          return false;
+        }
+      }
+      else if (perm === 'manage') {
+        if (!this.canManage(tokenKey, parsePath(path))) {
+          return false;
+        }
+      }
+      else if (perm === 'own') {
+        if (!this.canOwn(tokenKey, path)) {
+          return false;
+        }
+      }
+    }
+
     return true;
   }
 
@@ -921,6 +991,26 @@ function parsePermsFromScope(scope) {
   }
 
   return allPerms;
+}
+
+function encodeScopeFromPerms(perms) {
+  let scope = '';
+
+  for (const permParams of perms) {
+
+    scope += `type=${permParams.type};perm=${permParams.perm}`;
+
+    if (permParams.path) {
+      const path = permParams.path;
+      const trimmedPath = path.length > 1 && path.endsWith('/') ? path.slice(0, path.length - 1) : path;
+      scope += `;path=${trimmedPath.replace(/ /g, '[]')}`;
+    }
+
+    scope += ' ';
+  }
+
+  // remove trailing space
+  return scope.slice(0, scope.length - 1);
 }
 
 async function codeMatches(codeVerifier, codeChallenge) {
