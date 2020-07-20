@@ -22,29 +22,8 @@ class PauthBuilder {
     const authDir = path.join('.gemdrive', 'auth');
     await fs.promises.mkdir(authDir, { recursive: true });
 
-    const permsPath = path.join(authDir, 'perms.json');
-
-    let allPerms;
-    try {
-      const permsText = await fs.promises.readFile(permsPath)
-      allPerms = JSON.parse(permsText);
-    }
-    catch (e) {
-
-      if (!this._ownerEmail) {
-        throw new Error("Email required on first run");
-      }
-
-      allPerms = {
-        '/': {
-          owners: {
-            [this._ownerEmail]: true,
-          },
-        },
-      };
-
-      await persistJson(allPerms, permsPath);
-    }
+    const gemAuthDir = path.join('gemdrive', 'auth', 'acls');
+    await fs.promises.mkdir(gemAuthDir, { recursive: true });
 
     const tokensPath = path.join(authDir, 'tokens.json');
 
@@ -69,16 +48,16 @@ class PauthBuilder {
       throw new Error("No config provided");
     }
 
-    return new Pauth(config, allPerms, tokens, this._loginPagePath, this._ownerEmail);
+    return new Pauth(config, tokens, this._loginPagePath, this._ownerEmail);
   }
 }
 
 class Pauth {
 
-  constructor(config, allPerms, tokens, loginPagePath, ownerEmail) {
+  constructor(config, tokens, loginPagePath, ownerEmail) {
     this._authDir = path.join('.gemdrive', 'auth');
+    this._gemAuthDir = path.join('gemdrive', 'auth');
     this._config = config;
-    this._allPerms = allPerms;
     this._tokens = tokens;
     this._persistTokens();
     this._loginPagePath = loginPagePath ? loginPagePath : path.join(__dirname, 'login.html');
@@ -124,8 +103,8 @@ class Pauth {
     const reqPath = decodeURIComponent(u.pathname.slice(rootPath.length));
 
     let method;
-    if (reqPath === '/.gemdrive/auth/addPerms') {
-      method = 'addPerms';
+    if (reqPath.endsWith('.gemdrive-acl.tsv') && req.method === 'PUT') {
+      method = 'setAcl';
     }
     else if (reqPath === '/.gemdrive/auth/requestPerms') {
       method = 'requestPerms';
@@ -206,7 +185,7 @@ class Pauth {
         }
 
         const requestedPerms = parsePermsFromScope(params.scope);
-        const hasPerms = this.tokenHasPerms(token, requestedPerms);
+        const hasPerms = await this.tokenHasPerms(token, requestedPerms);
 
         if (hasPerms) {
           filePath = path.join(__dirname, 'authorize.html');
@@ -236,7 +215,7 @@ class Pauth {
     }
     else if (method === 'delegate-auth-code' && req.method === 'POST') {
       const perms = parsePermsFromScope(params.scope);
-      const authCode = this.delegateAuthCode(
+      const authCode = await this.delegateAuthCode(
         token, params['code_challenge'], params['client_id'],
         params['redirect_uri'], { perms });
 
@@ -318,67 +297,40 @@ class Pauth {
 
       res.end();
     }
-    else if (method === 'addPerms') {
-      await this.addPerms(req, res, token);
+    else if (method === 'setAcl') {
+      const gemPath = reqPath.slice(0, -('.gemdrive-acl.tsv'.length));
+      await this.setAcl(req, res, gemPath, token);
     }
     else if (method === 'requestPerms') {
       await this.requestPerms(req, res, u, token);
     }
   }
 
-  async addPerms(req, res, token) {
+  async setAcl(req, res, gemPath, token) {
+    const bodyTsv = await parseBody(req);
 
-    const bodyJson = await parseBody(req);
-    const body = JSON.parse(bodyJson);
+    const acl = parseAcl(bodyTsv);
+    const valid = validateAcl(acl);
 
-    const roleRequests = body.requests;
-
-    // first verify we have the perms to change the perms
-    for (const request of roleRequests) {
-      if (request.perm === 'read' || request.perm === 'write') {
-        if (!this.canManage(token, request.path)) {
-          res.statusCode = 403;
-          res.write("You can't manage that");
-          res.end();
-          return;
-        }
-      }
-      else if (request.perm === 'manage' || request.perm === 'own') {
-        if (!this.canOwn(token, request.path)) {
-          res.statusCode = 403;
-          res.write("You can't own that");
-          res.end();
-          return;
-        }
-      }
-      else {
-        res.statusCode = 400;
-        res.write("Invalid perm " + request.perm);
-        res.end();
-        return;
-      }
+    if (!valid) {
+      res.statusCode = 400;
+      res.write("Invalid ACL");
+      res.end();
+      return;
     }
 
-    // perform the actual change
-    for (const request of roleRequests) {
-      switch (request.perm) {
-        case 'read':
-          this.addReader(token, request.path, body.email);
-          break;
-        case 'write':
-          this.addWriter(token, request.path, body.email);
-          break;
-        case 'manage':
-          this.addManager(token, request.path, body.email);
-          break;
-        default:
-          res.statusCode = 400;
-          res.write("Invalid perm " + request.perm);
-          res.end();
-          return;
-          break;
-      }
+    if (!await this.canOwn(token, gemPath)) {
+      res.statusCode = 403;
+      res.write(`You don't have owner permissions for ${gemPath}\n`);
+      res.end();
+      return;
     }
+
+    const aclDir = path.join(this._gemAuthDir, 'acls' + gemPath);
+    await fs.promises.mkdir(aclDir, { recursive: true });
+
+    const aclPath = path.join(aclDir, '.gemdrive-acl.tsv');
+    await fs.promises.writeFile(aclPath, bodyTsv);
 
     res.end();
   }
@@ -391,14 +343,11 @@ class Pauth {
 
     for (const request of permRequests) {
       const pathParts = parsePath(request.path);
-      const curPerms = this._getPerms(pathParts);
+      const acl = await this._getAcl(pathParts);
 
       const notifySet = new Set();
-      for (const email in curPerms.owners) {
-        notifySet.add(email);
-      }
-      if (request.perm === 'read' || request.perm === 'write') {
-        for (const email in curPerms.managers) {
+      for (const entry of acl) {
+        if (entry.perm === 'own') {
           notifySet.add(email);
         }
       }
@@ -476,9 +425,9 @@ class Pauth {
     return tokenKey;
   }
 
-  delegateAuthCode(tokenKey, codeChallenge, clientId, redirectUri, request) {
+  async delegateAuthCode(tokenKey, codeChallenge, clientId, redirectUri, request) {
 
-    const accessTokenKey = this.delegate(tokenKey, request);
+    const accessTokenKey = await this.delegate(tokenKey, request);
 
     if (!accessTokenKey) {
       return null;
@@ -498,7 +447,7 @@ class Pauth {
     return authCode;
   }
 
-  delegate(tokenKey, request) {
+  async delegate(tokenKey, request) {
 
     const perms = request.perms;
 
@@ -513,7 +462,7 @@ class Pauth {
 
       // TODO: implement _tokenCanRead etc here to be more efficient
       if (permParams.perm === 'read') {
-        if (!this.canRead(tokenKey, path)) {
+        if (!await this.canRead(tokenKey, path)) {
           return null;
         }
 
@@ -521,19 +470,11 @@ class Pauth {
       }
 
       if (permParams.perm === 'write') {
-        if (!this.canWrite(tokenKey, path)) {
+        if (!await this.canWrite(tokenKey, path)) {
           return null;
         }
 
         tokenPerms[path].write = true;
-      }
-
-      if (permParams.perm === 'manage') {
-        if (!this.canManage(tokenKey, parsePath(path))) {
-          return null;
-        }
-
-        tokenPerms[path].manage = true;
       }
     }
 
@@ -584,7 +525,7 @@ class Pauth {
     return true;
   }
 
-  tokenHasPerms(tokenKey, requests) {
+  async tokenHasPerms(tokenKey, requests) {
 
     for (const request of requests) {
 
@@ -592,22 +533,17 @@ class Pauth {
       const path = request.path;
 
       if (perm === 'read') {
-        if (!this.canRead(tokenKey, path)) {
+        if (!await this.canRead(tokenKey, path)) {
           return false;
         }
       }
       else if (perm === 'write') {
-        if (!this.canWrite(tokenKey, path)) {
-          return false;
-        }
-      }
-      else if (perm === 'manage') {
-        if (!this.canManage(tokenKey, parsePath(path))) {
+        if (!await this.canWrite(tokenKey, path)) {
           return false;
         }
       }
       else if (perm === 'own') {
-        if (!this.canOwn(tokenKey, path)) {
+        if (!await this.canOwn(tokenKey, path)) {
           return false;
         }
       }
@@ -616,54 +552,17 @@ class Pauth {
     return true;
   }
 
-  async addReader(token, path, ident) {
-    const pathParts = parsePath(path);
-    this._assertManager(token, pathParts);
-    this._ensureReaders(path);
-    this._allPerms[path].readers[ident] = true;
-    await this._persistPerms();
-  }
-
-  async removeReader(token, path, ident) {
-    const pathParts = parsePath(path);
-    this._assertManager(token, pathParts);
-    this._ensureReaders(path);
-    this._allPerms[path].readers[ident] = false;
-    await this._persistPerms();
-  }
-
-  async addWriter(token, path, ident) {
-    const pathParts = parsePath(path);
-    this._assertManager(token, pathParts);
-    this._ensureWriters(path);
-    this._allPerms[path].writers[ident] = true;
-    await this._persistPerms();
-  }
-
-  async addManager(token, path, ident) {
-    this._assertOwner(token, path);
-    this._ensureManagers(path);
-    this._allPerms[path].managers[ident] = true;
-    await this._persistPerms();
-  }
-
-  async addOwner(token, path, ident) {
-    this._assertOwner(token, path);
-    this._ensureOwners(path);
-    this._allPerms[path].owners[ident] = true;
-    await this._persistPerms();
-  }
-
   async getPerms(token) {
     return new Perms(this, token);
   }
 
-  canRead(token, path) {
+  async canRead(token, path) {
     const ident = this._getIdent(token);
     const parts = parsePath(path);
-    const perms = this._getPerms(parts);
 
-    if (perms.readers.public === true) {
+    const acl = await this._getAcl(parts);
+
+    if (aclIdentCanRead(acl, 'public')) {
       return true;
     }
     
@@ -677,15 +576,16 @@ class Pauth {
       tokenPerms.manage === true ||
       tokenPerms.own === true;
 
-    return this._identCanRead(ident, perms) && tokenCanRead;
+    return tokenCanRead && aclIdentCanRead(acl, ident);
   }
 
-  canWrite(token, path) {
+  async canWrite(token, path) {
     const ident = this._getIdent(token);
     const parts = parsePath(path);
-    const perms = this._getPerms(parts);
 
-    if (perms.writers.public === true) {
+    const acl = await this._getAcl(parts);
+
+    if (aclIdentCanWrite(acl, ident)) {
       return true;
     }
 
@@ -698,30 +598,15 @@ class Pauth {
       tokenPerms.manage === true ||
       tokenPerms.own === true;
 
-    return this._identCanWrite(ident, perms) && tokenCanWrite;
+    return aclIdentCanWrite(acl, ident) && tokenCanWrite;
   }
 
-  canManage(token, pathParts) {
-    const ident = this._getIdent(token);
-    const perms = this._getPerms(pathParts);
-
-    const tokenPerms = this._getTokenPerms(token, pathParts);
-    if (tokenPerms === null) {
-      return false;
-    }
-
-    const tokenCanManage = tokenPerms.manage === true ||
-      tokenPerms.own === true;
-
-    return this._identCanManage(ident, perms) && tokenCanManage;
-  }
-
-  canOwn(token, path) {
+  async canOwn(token, path) {
     const ident = this._getIdent(token);
     const parts = parsePath(path);
-    const perms = this._getPerms(parts);
 
-    const identCanOwn = perms.owners[ident] === true;
+    const acl = await this._getAcl(parts);
+    console.log(acl);
 
     const tokenPerms = this._getTokenPerms(token, parts);
     if (tokenPerms === null) {
@@ -730,100 +615,29 @@ class Pauth {
 
     const tokenCanOwn = tokenPerms.own === true;
 
-    return identCanOwn && tokenCanOwn;
+    return aclIdentCanOwn(acl, ident) && tokenCanOwn;
   }
 
-  _identCanRead(ident, perms) {
-    return perms.readers[ident] === true || this._identCanWrite(ident, perms);
-  }
+  async _getAcl(pathParts) {
+    const aclDir = path.join(this._gemAuthDir, 'acls');
+    const parts = pathParts.slice();
 
-  _identCanWrite(ident, perms) {
-    return perms.writers[ident] === true || this._identCanManage(ident, perms);
-  }
-
-  _identCanManage(ident, perms) {
-    return perms.managers[ident] === true || this._identCanOwn(ident, perms);
-  }
-
-  _identCanOwn(ident, perms) {
-    return perms.owners[ident] === true;
-  }
-
-  _assertManager(token, path) {
-    if (!this.canManage(token, path)) {
-      throw new Error(`User does not have Manager permissions for path '${path}'`);
-    }
-  }
-
-  _assertOwner(token, path) {
-    if (!this.canOwn(token, path)) {
-      throw new Error(`User does not have Owner permissions for path '${path}'`);
-    }
-  }
-
-  _ensurePath(path) {
-    if (!this._allPerms[path]) {
-      this._allPerms[path] = {};
-    }
-  }
-
-  _ensureReaders(path) {
-    this._ensurePath(path);
-
-    if (!this._allPerms[path].readers) {
-      this._allPerms[path].readers = {};
-    }
-  }
-
-  _ensureWriters(path) {
-    this._ensurePath(path);
-
-    if (!this._allPerms[path].writers) {
-      this._allPerms[path].writers = {};
-    }
-  }
-
-  _ensureManagers(path) {
-    this._ensurePath(path);
-
-    if (!this._allPerms[path].managers) {
-      this._allPerms[path].managers = {};
-    }
-  }
-
-  _ensureOwners(path) {
-    this._ensurePath(path);
-
-    if (!this._allPerms[path].owners) {
-      this._allPerms[path].owners = {};
-    }
-  }
-
-  _getPerms(pathParts) {
-    const perms = {
-      readers: {},
-      writers: {},
-      managers: {},
-      owners: {},
-    };
-
-    Object.assign(perms.readers, this._allPerms['/'].readers);
-    Object.assign(perms.writers, this._allPerms['/'].writers);
-    Object.assign(perms.managers, this._allPerms['/'].managers);
-    Object.assign(perms.owners, this._allPerms['/'].owners);
-
-    let curPath = '';
-    for (const part of pathParts) {
-      curPath += '/' + part;
-      if (this._allPerms[curPath]) {
-        Object.assign(perms.readers, this._allPerms[curPath].readers);
-        Object.assign(perms.writers, this._allPerms[curPath].writers);
-        Object.assign(perms.managers, this._allPerms[curPath].managers);
-        Object.assign(perms.owners, this._allPerms[curPath].owners);
+    for (let i = parts.length; i > -1; i--) {
+      const pathStr = encodePath(parts);
+      const aclPath = path.join(aclDir, pathStr, '.gemdrive-acl.tsv');
+      try {
+        const aclText = await fs.promises.readFile(aclPath, 'utf8');
+        const acl = parseAcl(aclText);
+        return acl;
       }
+      catch (e) {
+        //console.log(e);
+      }
+
+      parts.pop();
     }
 
-    return perms;
+    return null;
   }
 
   _getTokenPerms(tokenKey, pathParts) {
@@ -878,11 +692,6 @@ class Pauth {
     return tokenPerms;
   }
 
-  async _persistPerms() {
-    const permsJson = JSON.stringify(this._allPerms, null, 2);
-    await fs.promises.writeFile(path.join(this._authDir, 'perms.json'), permsJson);
-  }
-
   async _persistTokens() {
     const tokensJson = JSON.stringify(this._tokens, null, 2);
     await fs.promises.writeFile(path.join(this._authDir, 'tokens.json'), tokensJson);
@@ -909,17 +718,17 @@ class Perms {
     this._token = token;
   }
 
-  canRead(path) {
-    return this._pauth.canRead(this._token, path);
+  async canRead(path) {
+    return await this._pauth.canRead(this._token, path);
   }
 
-  canWrite(path) {
-    return this._pauth.canWrite(this._token, path);
+  async canWrite(path) {
+    return await this._pauth.canWrite(this._token, path);
   }
 }
 
-function arrayHas(a, item) {
-  return -1 !== a.indexOf(item);
+function encodePath(parts) {
+  return '/' + parts.join('/');
 }
 
 function parsePath(path) {
@@ -1022,6 +831,67 @@ async function codeMatches(codeVerifier, codeChallenge) {
     .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
   return base64Code === codeChallenge;
+}
+
+function parseAcl(tsvText) {
+  const lines = tsvText.split('\n');
+
+  const acl = [];
+
+  for (const row of lines) {
+    if (row.length === 0) {
+      continue;
+    }
+
+    const columns = row.split('\t');
+
+    acl.push({
+      idType: columns[0],
+      id: columns[1],
+      perm: columns[2],
+    });
+  }
+
+  return acl;
+}
+
+// TODO: check for duplicate entries
+function validateAcl(acl) {
+  for (const entry of acl) {
+    if (!['email', 'builtin'].includes(entry.idType)) {
+      return false;
+    }
+
+    if (!['read', 'write', 'own'].includes(entry.perm)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function aclIdentCanRead(acl, ident) {
+  return aclIdentHasPerm(acl, ident, ['read', 'write', 'own']);
+}
+function aclIdentCanWrite(acl, ident) {
+  return aclIdentHasPerm(acl, ident, ['write', 'own']);
+}
+function aclIdentCanOwn(acl, ident) {
+  return aclIdentHasPerm(acl, ident, ['own']);
+}
+function aclIdentHasPerm(acl, ident, permList) {
+
+  if (!acl) {
+    return false;
+  }
+
+  for (const entry of acl) {
+    if (entry.id === ident && permList.includes(entry.perm)) {
+      return true;
+    }
+  }
+
+  return false;
 }
 
 
