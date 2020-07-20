@@ -585,7 +585,7 @@ class Pauth {
 
     const acl = await this._getAcl(parts);
 
-    if (aclIdentCanWrite(acl, ident)) {
+    if (aclIdentCanWrite(acl, 'public')) {
       return true;
     }
 
