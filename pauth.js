@@ -109,6 +109,9 @@ class Pauth {
     else if (reqPath === '/.gemdrive/auth/requestPerms') {
       method = 'requestPerms';
     }
+    else if (reqPath.endsWith('/auth/delegate')) {
+      method = 'delegate';
+    }
     else {
       method = params['pauth-method'];
     }
@@ -212,6 +215,22 @@ class Pauth {
           f.pipe(res);
         }
       }
+    }
+    else if (method === 'delegate' && req.method === 'POST') {
+
+      const body = await parseBody(req);
+      const permRequest = JSON.parse(body);
+      const accessTokenKey = await this.delegate(token, permRequest);
+
+      if (!accessTokenKey) {
+        res.statusCode = 403;
+        res.write("Delegation error");
+      }
+      else {
+        res.write(accessTokenKey);
+      }
+
+      res.end();
     }
     else if (method === 'delegate-auth-code' && req.method === 'POST') {
       const perms = parsePermsFromScope(params.scope);
@@ -460,7 +479,6 @@ class Pauth {
 
       tokenPerms[path] = {};
 
-      // TODO: implement _tokenCanRead etc here to be more efficient
       if (permParams.perm === 'read') {
         if (!await this.canRead(tokenKey, path)) {
           return null;
@@ -606,7 +624,6 @@ class Pauth {
     const parts = parsePath(path);
 
     const acl = await this._getAcl(parts);
-    console.log(acl);
 
     const tokenPerms = this._getTokenPerms(token, parts);
     if (tokenPerms === null) {
