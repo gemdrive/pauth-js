@@ -93,14 +93,12 @@ class Pauth {
     }, TEN_MIN_MS);
   }
 
-  async handle(req, res, rootPath, token) {
+  async handle(req, res, reqPath, rootPath, token) {
 
     res.setHeader('X-Frame-Options', 'SAMEORIGIN');
 
     const u = url.parse(req.url); 
     const params = querystring.parse(u.query);
-
-    const reqPath = decodeURIComponent(u.pathname.slice(rootPath.length));
 
     let method;
     if (reqPath.endsWith('.gemdrive-acl.tsv') && req.method === 'PUT') {
