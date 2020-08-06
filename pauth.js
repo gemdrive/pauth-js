@@ -19,13 +19,10 @@ class PauthBuilder {
 
   async build() {
 
-    const authDir = path.join('.gemdrive', 'auth');
-    await fs.promises.mkdir(authDir, { recursive: true });
-
     const gemAuthDir = path.join('gemdrive', 'auth', 'acls');
     await fs.promises.mkdir(gemAuthDir, { recursive: true });
 
-    const tokensPath = path.join(authDir, 'tokens.json');
+    const tokensPath = path.join(gemAuthDir, 'tokens.json');
 
     let tokens;
     try {
@@ -55,7 +52,6 @@ class PauthBuilder {
 class Pauth {
 
   constructor(config, tokens, loginPagePath, ownerEmail) {
-    this._authDir = path.join('.gemdrive', 'auth');
     this._gemAuthDir = path.join('gemdrive', 'auth');
     this._config = config;
     this._tokens = tokens;
@@ -709,7 +705,7 @@ class Pauth {
 
   async _persistTokens() {
     const tokensJson = JSON.stringify(this._tokens, null, 2);
-    await fs.promises.writeFile(path.join(this._authDir, 'tokens.json'), tokensJson);
+    await fs.promises.writeFile(path.join(this._gemAuthDir, 'tokens.json'), tokensJson);
   }
 
   _getIdent(token) {
