@@ -19,7 +19,7 @@ class PauthBuilder {
 
   async build() {
 
-    const gemAuthDir = path.join('gemdrive', 'auth', 'acls');
+    const gemAuthDir = path.join('gemdrive', 'auth');
     await fs.promises.mkdir(gemAuthDir, { recursive: true });
 
     const tokensPath = path.join(gemAuthDir, 'tokens.json');
@@ -45,14 +45,14 @@ class PauthBuilder {
       throw new Error("No config provided");
     }
 
-    return new Pauth(config, tokens, this._loginPagePath, this._ownerEmail);
+    return new Pauth(config, tokens, this._loginPagePath, this._ownerEmail, gemAuthDir);
   }
 }
 
 class Pauth {
 
-  constructor(config, tokens, loginPagePath, ownerEmail) {
-    this._gemAuthDir = path.join('gemdrive', 'auth');
+  constructor(config, tokens, loginPagePath, ownerEmail, gemAuthDir) {
+    this._gemAuthDir = gemAuthDir;
     this._config = config;
     this._tokens = tokens;
     this._persistTokens();
