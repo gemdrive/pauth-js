@@ -97,8 +97,8 @@ class Pauth {
     const params = querystring.parse(u.query);
 
     let method;
-    if (reqPath.endsWith('.gemdrive-acl.tsv') && req.method === 'PUT') {
-      method = 'setAcl';
+    if (reqPath.endsWith('.gemdrive-acl.json') && req.method === 'PUT') {
+      method = 'setAclJson';
     }
     else if (reqPath === '/.gemdrive/auth/requestPerms') {
       method = 'requestPerms';
@@ -310,19 +310,20 @@ class Pauth {
 
       res.end();
     }
-    else if (method === 'setAcl') {
-      const gemPath = reqPath.slice(0, -('.gemdrive-acl.tsv'.length));
-      await this.setAcl(req, res, gemPath, token);
+    else if (method === 'setAclJson') {
+      const gemPath = reqPath.slice(0, -('.gemdrive-acl.json'.length));
+      await this.setAclJson(req, res, gemPath, token);
     }
     else if (method === 'requestPerms') {
       await this.requestPerms(req, res, u, token);
     }
   }
 
-  async setAcl(req, res, gemPath, token) {
-    const bodyTsv = await parseBody(req);
+  async setAclJson(req, res, gemPath, token) {
 
-    const acl = parseAcl(bodyTsv);
+    const bodyJson = await parseBody(req);
+
+    const acl = JSON.parse(bodyJson);
     const valid = validateAcl(acl);
 
     if (!valid) {
@@ -342,8 +343,8 @@ class Pauth {
     const aclDir = path.join(this._gemAuthDir, 'acls' + gemPath);
     await fs.promises.mkdir(aclDir, { recursive: true });
 
-    const aclPath = path.join(aclDir, '.gemdrive-acl.tsv');
-    await fs.promises.writeFile(aclPath, bodyTsv);
+    const aclPath = path.join(aclDir, '.gemdrive-acl.json');
+    await fs.promises.writeFile(aclPath, bodyJson);
 
     res.end();
   }
@@ -635,10 +636,10 @@ class Pauth {
 
     for (let i = parts.length; i > -1; i--) {
       const pathStr = encodePath(parts);
-      const aclPath = path.join(aclDir, pathStr, '.gemdrive-acl.tsv');
+      const aclPath = path.join(aclDir, pathStr, '.gemdrive-acl.json');
       try {
         const aclText = await fs.promises.readFile(aclPath, 'utf8');
-        const acl = parseAcl(aclText);
+        const acl = JSON.parse(aclText);
         return acl;
       }
       catch (e) {
@@ -844,31 +845,14 @@ async function codeMatches(codeVerifier, codeChallenge) {
   return base64Code === codeChallenge;
 }
 
-function parseAcl(tsvText) {
-  const lines = tsvText.split('\n');
-
-  const acl = [];
-
-  for (const row of lines) {
-    if (row.length === 0) {
-      continue;
-    }
-
-    const columns = row.split('\t');
-
-    acl.push({
-      idType: columns[0],
-      id: columns[1],
-      perm: columns[2],
-    });
-  }
-
-  return acl;
-}
-
 // TODO: check for duplicate entries
 function validateAcl(acl) {
   for (const entry of acl) {
+
+    if (!entry.idType || !entry.id || !entry.perm) {
+      return false;
+    }
+
     if (!['email', 'builtin'].includes(entry.idType)) {
       return false;
     }
