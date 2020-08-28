@@ -100,6 +100,9 @@ class Pauth {
     if (reqPath.endsWith('.gemdrive-acl.json') && req.method === 'PUT') {
       method = 'setAclJson';
     }
+    else if (reqPath.endsWith('.gemdrive-authorize.json') && req.method === 'POST') {
+      method = 'emailAuthorize';
+    }
     else if (reqPath === '/.gemdrive/auth/requestPerms') {
       method = 'requestPerms';
     }
@@ -110,7 +113,56 @@ class Pauth {
       method = params['pauth-method'];
     }
 
-    if (method === 'login') {
+
+    if (method === 'emailAuthorize') {
+
+      const bodyJson = await parseBody(req);
+      const body = JSON.parse(bodyJson);
+
+      const perms = {};
+      for (const relativePath in body.perms) {
+
+        const path = reqPath.slice(0, -('/.gemdrive-authorize.json'.length)) + relativePath;
+
+        // remove trailing slash for now
+        const trimmedPath = path.slice(0, -1);
+
+        if (!perms[trimmedPath]) {
+          perms[trimmedPath] = {};
+        }
+
+        const perm = body.perms[relativePath];
+        perms[trimmedPath][perm] = true;
+      }
+
+      try {
+        const authReq = {
+          email: body.id,
+          perms,
+        };
+
+        const keys = await this.authorize(authReq);
+        const newToken = keys.tokenKey;
+        const cookieTokenKey = keys.cookieTokenKey;
+        res.setHeader('Set-Cookie', `access_token=${cookieTokenKey}; SameSite=Lax; Max-Age=259200; Secure; HttpOnly`);
+        if (newToken === null) {
+          res.write("User does not have permissions to do that");
+        }
+        else {
+          res.write(newToken);
+        }
+      }
+      catch (e) {
+        console.error(e);
+        res.statusCode = 400;
+        res.write("Authorization failed");
+        res.end();
+        return;
+      }
+
+      res.end();
+    }
+    else if (method === 'login') {
       try {
 
         const authReq = {
