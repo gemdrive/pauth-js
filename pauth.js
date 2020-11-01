@@ -136,7 +136,7 @@ class Pauth {
         const keys = await this.authorize(authReq);
         const newToken = keys.tokenKey;
         const cookieTokenKey = keys.cookieTokenKey;
-        res.setHeader('Set-Cookie', `access_token=${cookieTokenKey}; SameSite=Lax; Max-Age=259200; Secure; HttpOnly`);
+        res.setHeader('Set-Cookie', `access_token=${cookieTokenKey}; SameSite=Lax; Max-Age=31536000; Secure; HttpOnly`);
         if (newToken === null) {
           res.write("User does not have permissions to do that");
         }
@@ -184,7 +184,7 @@ class Pauth {
         const keys = await this.authorize(authReq);
         const newToken = keys.tokenKey;
         const cookieTokenKey = keys.cookieTokenKey;
-        res.setHeader('Set-Cookie', `access_token=${cookieTokenKey}; SameSite=Lax; Max-Age=259200; Secure; HttpOnly`);
+        res.setHeader('Set-Cookie', `access_token=${cookieTokenKey}; SameSite=Lax; Max-Age=31536000; Secure; HttpOnly`);
         if (newToken === null) {
           res.write("User does not have permissions to do that");
         }
@@ -217,7 +217,7 @@ class Pauth {
         const keys = await this.authorize(authReq);
         const newToken = keys.tokenKey;
         const cookieTokenKey = keys.cookieTokenKey;
-        res.setHeader('Set-Cookie', `access_token=${cookieTokenKey}; SameSite=Lax; Max-Age=259200; Secure; HttpOnly`);
+        res.setHeader('Set-Cookie', `access_token=${cookieTokenKey}; SameSite=Lax; Max-Age=31536000; Secure; HttpOnly`);
         if (newToken === null) {
           res.write("User does not have permissions to do that");
         }
